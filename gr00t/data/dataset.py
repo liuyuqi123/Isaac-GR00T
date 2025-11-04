@@ -55,6 +55,33 @@ LE_ROBOT_INFO_FILENAME = "meta/info.json"
 LE_ROBOT_STATS_FILENAME = "meta/stats.json"
 LE_ROBOT_DATA_FILENAME = "data/*/*.parquet"
 
+def unwrap_list_array(x):
+    from ast import literal_eval
+    import collections.abc
+
+    # 1. 字符串先解析
+    if isinstance(x, str):
+        x = literal_eval(x)
+
+    # 2. 递归展开任意层嵌套 list/tuple
+    def _flatten(seq):
+        for item in seq:
+            if isinstance(item, (list, tuple, np.ndarray)):
+                yield from _flatten(item)
+            else:
+                yield item
+
+    # 3. 只要外面还有壳，就剥到最里层
+    while isinstance(x, (list, tuple, np.ndarray)) and len(x) == 1:
+        x = x[0]
+
+    # 4. 如果还剩可迭代对象（多维 list/array），全部拉平
+    if isinstance(x, (list, tuple, np.ndarray)):
+        x = list(_flatten(x))
+
+    # 5. 强制 1-D float32
+    arr = np.array(x, dtype=np.float32)
+    return arr
 
 def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
     """Calculate the dataset statistics of all columns for a list of parquet files."""
@@ -80,9 +107,40 @@ def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
             print(f"Skipping {le_modality} because it is a string")
             continue
 
-        np_data = np.vstack(
-            [np.asarray(x, dtype=np.float32) for x in all_low_dim_data[le_modality]]
-        )
+        # # 原始实现
+        # np_data = np.vstack(
+        #     [np.asarray(x, dtype=np.float32) for x in all_low_dim_data[le_modality]]
+        # )
+
+        def flatten_object_array(x):
+            """
+            无论 x 是
+              - ndarray(dtype=object, size=1)  还是
+              - ndarray(dtype=object, size=N)
+            都返回 list[ndarray]，方便后续 np.stack
+            """
+            if isinstance(x, np.ndarray) and x.dtype == object:
+                # 一次性把 object 壳里的所有数值数组掏出来
+                return [np.asarray(item) for item in x]
+            # 本来就已经是规则 ndarray，直接当一行
+            return [np.asarray(x)]
+
+        # 对原始数据进行剥壳处理
+        # ---------- 替换原统计循环 ----------
+        np_data_list = []
+        for idx, x in enumerate(all_low_dim_data[le_modality]):
+            rows = flatten_object_array(x)  # 必然拿到 list[ndarray]
+            try:
+                rows = [r.astype(np.float32) for r in rows]
+            except ValueError:
+                raise RuntimeError(f'row {idx} 里层仍不是纯数值！rows={rows!r}')
+            # 堆成 (N, D) 二维矩阵；N=16, D=20 对于 action 列
+            block = np.stack(rows)  # 若长度不一致这里会立即抛
+            np_data_list.append(block)
+
+        # 再把所有行块拼成 (total_samples, D)
+        np_data = np.vstack(np_data_list)
+
         dataset_statistics[le_modality] = {
             "mean": np.mean(np_data, axis=0).tolist(),
             "std": np.std(np_data, axis=0).tolist(),
@@ -537,8 +595,28 @@ class LeRobotSingleDataset(Dataset):
         Returns:
             dict: The data for the step.
         """
+        # # 原始实现
+        # trajectory_id, base_index = self.all_steps[index]
+        # return self.transforms(self.get_step_data(trajectory_id, base_index))
+
+        # ==================================================
+        # 分步调试
+        # 第一步：获取trajectory信息
         trajectory_id, base_index = self.all_steps[index]
-        return self.transforms(self.get_step_data(trajectory_id, base_index))
+        # print(f"Debug - index: {index}")
+        # print(f"Debug - trajectory_id: {trajectory_id}, base_index: {base_index}")
+
+        # 第二步：获取原始数据
+        raw_data = self.get_step_data(trajectory_id, base_index)
+        # print(f"Debug - raw_data keys: {raw_data.keys()}")
+        # for key, value in raw_data.items():
+        #     print(f"Debug - {key}: type={type(value)}, shape={getattr(value, 'shape', 'N/A')}")
+
+        # 第三步：应用transforms
+        transformed_data = self.transforms(raw_data)
+        # print(f"Debug - transformed_data keys: {transformed_data.keys()}")
+
+        return transformed_data
 
     def get_step_data(self, trajectory_id: int, base_index: int) -> dict:
         """Get the RAW data for a single step in a trajectory. No transforms are applied.
@@ -765,7 +843,14 @@ class LeRobotSingleDataset(Dataset):
         # Get the data array, shape: (T, D)
         assert self.curr_traj_data is not None, f"No data found for {trajectory_id=}"
         assert le_key in self.curr_traj_data.columns, f"No {le_key} found in {trajectory_id=}"
-        data_array: np.ndarray = np.stack(self.curr_traj_data[le_key])  # type: ignore
+
+        # # 原始实现，不能正确读取数据维度
+        # data_array: np.ndarray = np.stack(self.curr_traj_data[le_key])  # type: ignore
+
+        # 先剥壳再堆叠，保证 (T, dim)
+        data_list = [unwrap_list_array(x) for x in self.curr_traj_data[le_key]]
+        data_array = np.stack(data_list)  # 现在一定是 (T, dim) 且 dtype=float32
+
         if data_array.ndim == 1:
             assert (
                 data_array.shape[0] == max_length

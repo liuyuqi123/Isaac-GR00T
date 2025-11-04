@@ -772,6 +772,136 @@ class AgibotGenie1DataConfig(BaseDataConfig):
 
 ###########################################################################################
 
+class BimanualNovaDataConfig(BaseDataConfig):
+    # 1. 定义你的数据键
+    video_keys = ["video.image_0", "video.image_1"]  # 根据实际摄像头
+    state_keys = ["state.left_arm", "state.right_arm"]
+    action_keys = ["action.left_arm", "action.right_arm"]
+
+    # 2. 配置归一化（关键！）
+    state_normalization_modes = {
+        "state.left_arm": "min_max",  # 或 "standard"
+    }
+
+    def transform(self):
+        pass
+
+###########################################################################################
+
+class SingleNovaDataConfig(BaseDataConfig):
+    # 1. 定义你的数据键
+    video_keys = ["video.chunk-000"]
+    # TODO 检查这些key是否能从parquet中读取到
+    state_keys = [
+        "state.robot0_eef_pos",
+        "state.robot0_eef_rot_axis_angle",
+        "state.robot0_eef_rot_axis_angle_wrt_start",
+        "state.robot0_gripper_width"
+    ]
+    # TODO 保存为lerobot的时候存入了对应的key么？？
+    action_keys = [
+        "action.robot0_eef_pos",
+        "action.robot0_eef_rot_axis_angle",
+        "action.robot0_gripper_width"
+    ]
+
+    # # TODO 这个可能有问题：annotation
+    # language_keys = ["annotation.robot0_language_instruction"]
+    # language_keys = ["robot0_language_instruction"]
+
+    # 根据umi shape meta设置
+    # TODO 是否对应img_obs_horizon = 2， 没有同时用到low_dim_obs_horizon ??
+    observation_indices = [0, 1]  # 对应state horizon为2的情况
+    action_indices = list(range(16))
+
+    # 2. 配置归一化
+    # Used in StateActionTransform for normalization and target rotations
+    state_normalization_modes = {
+        # 或 "standard"  TODO "standard"是什么 ？？
+        "state.robot0_eef_pos": "min_max",
+        "state.robot0_eef_rot_axis_angle": "min_max",
+        "state.robot0_eef_rot_axis_angle_wrt_start": "min_max",
+        "state.robot0_gripper_width": "min_max",
+    }
+    state_target_rotations = {
+        # "state.robot0_eef_rot_axis_angle": "rotation_6d",  # ← 轴角 → 6D
+        "state.robot0_eef_rot_axis_angle": "axis_angle",
+    }
+    action_normalization_modes = {
+        "action.robot0_eef_pos": "min_max",
+        "action.robot0_eef_rot_axis_angle": "min_max",
+        "action.robot0_gripper_width": "min_max",
+    }
+
+    def modality_config(self) -> dict[str, ModalityConfig]:
+        video_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.video_keys,
+        )
+        state_modality = ModalityConfig(
+            delta_indices=self.observation_indices,
+            modality_keys=self.state_keys,
+        )
+        action_modality = ModalityConfig(
+            delta_indices=self.action_indices,
+            modality_keys=self.action_keys,
+        )
+        # language_modality = ModalityConfig(
+        #     delta_indices=self.observation_indices,
+        #     modality_keys=self.language_keys,
+        # )
+        return {
+            "video": video_modality,
+            "state": state_modality,
+            "action": action_modality,
+            # "language": language_modality,
+        }
+
+    def transform(self):
+        transforms = [
+            # video transforms
+            VideoToTensor(apply_to=self.video_keys),
+            VideoCrop(apply_to=self.video_keys, scale=0.99),  # scale： 裁剪比例
+            VideoResize(apply_to=self.video_keys, height=224, width=224, interpolation="linear"),
+            VideoColorJitter(
+                apply_to=self.video_keys,
+                brightness=0.3,
+                contrast=0.4,
+                saturation=0.5,
+                hue=0.08,
+            ),  # 不清楚几个参数作用
+            VideoToNumpy(apply_to=self.video_keys),
+            # state transforms
+            StateActionToTensor(apply_to=self.state_keys),
+            StateActionTransform(
+                apply_to=self.state_keys,
+                normalization_modes=self.state_normalization_modes,
+                # target_rotations=self.state_target_rotations,
+            ),
+            # action transforms
+            StateActionToTensor(apply_to=self.action_keys),
+            StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes=self.action_normalization_modes,
+            ),
+            # concat transforms
+            ConcatTransform(
+                video_concat_order=self.video_keys,
+                state_concat_order=self.state_keys,
+                action_concat_order=self.action_keys,
+            ),
+            GR00TTransform(
+                state_horizon=len(self.observation_indices),
+                action_horizon=len(self.action_indices),  # 不确定是历史观测horizon还是未来动作horizon
+                max_state_dim=64,  # 大于等于实际state维度
+                max_action_dim=32,
+            ),
+        ]
+
+        return ComposedModalityTransform(transforms=transforms)
+
+###########################################################################################
+
 DATA_CONFIG_MAP = {
     "fourier_gr1_arms_waist": FourierGr1ArmsWaistDataConfig(),
     "fourier_gr1_arms_only": FourierGr1ArmsOnlyDataConfig(),
@@ -785,4 +915,8 @@ DATA_CONFIG_MAP = {
     "unitree_g1_full_body": UnitreeG1FullBodyDataConfig(),
     "oxe_droid": OxeDroidDataConfig(),
     "agibot_genie1": AgibotGenie1DataConfig(),
+
+    # 针对nova臂进行定制
+    "bimanual_nova_gripper": BimanualNovaDataConfig(),  # 双臂
+    "single_nova_gripper": SingleNovaDataConfig(),  # 单臂
 }
