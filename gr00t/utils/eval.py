@@ -62,7 +62,11 @@ def calc_mse_for_single_trajectory(
             if data_point is None:
                 data_point = dataset.get_step_data(traj_id, step_count)
 
-            print("inferencing at step: ", step_count)
+            # debug动作不改变
+            # ① 打印真实动作
+            print(f"step={step_count}, gt_action={data_point['action.robot0_eef_pos'][0]}")
+
+            # print("inferencing at step: ", step_count)
             action_chunk = policy.get_action(data_point)
             for j in range(action_horizon):
                 # NOTE: concat_pred_action = action[f"action.{modality_keys[0]}"][j]

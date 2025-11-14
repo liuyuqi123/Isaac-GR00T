@@ -9,6 +9,8 @@ import torch
 from transformers import TrainingArguments
 
 from gr00t.data.dataset import LeRobotSingleDataset
+from gr00t.data.umi_dataset import LeRobotUmiSingleDataset
+
 from gr00t.data.schema import EmbodimentTag
 from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from gr00t.experiment.runner import TrainRunner
@@ -74,7 +76,17 @@ def main(args):
     transforms = data_config_cls.transform()
 
     # 1.2 data loader
-    train_dataset = LeRobotSingleDataset(
+    # # 原始数据集实现
+    # train_dataset = LeRobotSingleDataset(
+    #     dataset_path=args.dataset_path,
+    #     modality_configs=modality_configs,
+    #     transforms=transforms,
+    #     embodiment_tag=embodiment_tag,
+    #     video_backend=args.video_backend,
+    # )
+
+    # 兼容nova data_config的数据集实现
+    train_dataset = LeRobotUmiSingleDataset(
         dataset_path=args.dataset_path,
         modality_configs=modality_configs,
         transforms=transforms,

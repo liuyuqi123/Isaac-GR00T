@@ -791,14 +791,14 @@ class BimanualNovaDataConfig(BaseDataConfig):
 class SingleNovaDataConfig(BaseDataConfig):
     # 1. 定义你的数据键
     video_keys = ["video.chunk-000"]
-    # TODO 检查这些key是否能从parquet中读取到
+
     state_keys = [
         "state.robot0_eef_pos",
         "state.robot0_eef_rot_axis_angle",
         "state.robot0_eef_rot_axis_angle_wrt_start",
         "state.robot0_gripper_width"
     ]
-    # TODO 保存为lerobot的时候存入了对应的key么？？
+
     action_keys = [
         "action.robot0_eef_pos",
         "action.robot0_eef_rot_axis_angle",
@@ -809,16 +809,16 @@ class SingleNovaDataConfig(BaseDataConfig):
     # language_keys = ["annotation.robot0_language_instruction"]
     # language_keys = ["robot0_language_instruction"]
 
-    # 根据umi shape meta设置
-    # TODO 是否对应img_obs_horizon = 2， 没有同时用到low_dim_obs_horizon ??
-    observation_indices = [0, 1]  # 对应state horizon为2的情况
+    # TODO 测试[-1, 0]是否对应obs_horizon = 2
+    # 也可以将obs和low_dim分开设置，但没必要
+    # observation_indices = [0, 1]  # 对应state horizon为2的情况？？
+    observation_indices = [-1, 0]  # 试试用历史两帧
     action_indices = list(range(16))
 
     # 2. 配置归一化
     # Used in StateActionTransform for normalization and target rotations
     state_normalization_modes = {
-        # 或 "standard"  TODO "standard"是什么 ？？
-        "state.robot0_eef_pos": "min_max",
+        "state.robot0_eef_pos": "min_max",  # 或 "standard"  TODO "standard"是什么 ？？
         "state.robot0_eef_rot_axis_angle": "min_max",
         "state.robot0_eef_rot_axis_angle_wrt_start": "min_max",
         "state.robot0_gripper_width": "min_max",

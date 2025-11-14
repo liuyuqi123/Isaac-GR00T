@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
 import warnings
 from dataclasses import dataclass, field
 from typing import List, Literal
@@ -21,11 +23,12 @@ import numpy as np
 import tyro
 
 from gr00t.data.dataset import LeRobotSingleDataset
+
 from gr00t.data.embodiment_tags import EMBODIMENT_TAG_MAPPING
 from gr00t.eval.robot import RobotInferenceClient
 from gr00t.experiment.data_config import load_data_config
 from gr00t.model.policy import BasePolicy, Gr00tPolicy
-from gr00t.utils.eval import calc_mse_for_single_trajectory
+# from gr00t.utils.eval import calc_mse_for_single_trajectory
 
 warnings.simplefilter("ignore", category=FutureWarning)
 
@@ -126,7 +129,19 @@ def main(args: ArgsConfig):
     print("Current modality config: \n", modality)
 
     # Create the dataset
-    dataset = LeRobotSingleDataset(
+    # # 原始实现，不兼容umi数据格式
+    # dataset = LeRobotSingleDataset(
+    #     dataset_path=args.dataset_path,
+    #     modality_configs=modality,
+    #     video_backend=args.video_backend,
+    #     video_backend_kwargs=None,
+    #     transforms=None,  # We'll handle transforms separately through the policy
+    #     embodiment_tag=args.embodiment_tag,
+    # )
+
+    # UMI 数据集实现
+    from gr00t.data.umi_dataset import LeRobotUmiSingleDataset
+    dataset = LeRobotUmiSingleDataset(
         dataset_path=args.dataset_path,
         modality_configs=modality,
         video_backend=args.video_backend,
@@ -157,17 +172,34 @@ def main(args: ArgsConfig):
     all_mse = []
     for traj_id in range(args.start_traj, args.start_traj + args.trajs):
         print("Running trajectory:", traj_id)
-        mse = calc_mse_for_single_trajectory(
-            policy,
-            dataset,
-            traj_id,
+
+        # # 原始绘图函数实现
+        # mse = calc_mse_for_single_trajectory(
+        #     policy,
+        #     dataset,
+        #     traj_id,
+        #     modality_keys=args.modality_keys,
+        #     steps=args.steps,
+        #     action_horizon=args.action_horizon,
+        #     plot=args.plot,
+        #     plot_state=args.plot_state,
+        #     # save_plot_path=args.save_plot_path,
+        #     save_plot_path=traj_save_path,  # 使用轨迹特定的路径
+        # )
+
+        # 对整个chunk进行绘制
+        from gr00t.utils.eval_chunk_plot import calc_and_plot_trajectory_chunk
+        mse = calc_and_plot_trajectory_chunk(
+            policy=policy,
+            dataset=dataset,
+            traj_id=traj_id,
             modality_keys=args.modality_keys,
             steps=args.steps,
             action_horizon=args.action_horizon,
-            plot=args.plot,
-            plot_state=args.plot_state,
-            save_plot_path=args.save_plot_path,
+            plot_dir="./plot_results",
+            plot_tag="chunk_view",
         )
+
         print("MSE:", mse)
         all_mse.append(mse)
     print("Average MSE across all trajs:", np.mean(all_mse))

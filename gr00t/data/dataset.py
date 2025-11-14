@@ -55,33 +55,6 @@ LE_ROBOT_INFO_FILENAME = "meta/info.json"
 LE_ROBOT_STATS_FILENAME = "meta/stats.json"
 LE_ROBOT_DATA_FILENAME = "data/*/*.parquet"
 
-def unwrap_list_array(x):
-    from ast import literal_eval
-    import collections.abc
-
-    # 1. 字符串先解析
-    if isinstance(x, str):
-        x = literal_eval(x)
-
-    # 2. 递归展开任意层嵌套 list/tuple
-    def _flatten(seq):
-        for item in seq:
-            if isinstance(item, (list, tuple, np.ndarray)):
-                yield from _flatten(item)
-            else:
-                yield item
-
-    # 3. 只要外面还有壳，就剥到最里层
-    while isinstance(x, (list, tuple, np.ndarray)) and len(x) == 1:
-        x = x[0]
-
-    # 4. 如果还剩可迭代对象（多维 list/array），全部拉平
-    if isinstance(x, (list, tuple, np.ndarray)):
-        x = list(_flatten(x))
-
-    # 5. 强制 1-D float32
-    arr = np.array(x, dtype=np.float32)
-    return arr
 
 def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
     """Calculate the dataset statistics of all columns for a list of parquet files."""
@@ -126,7 +99,6 @@ def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
             return [np.asarray(x)]
 
         # 对原始数据进行剥壳处理
-        # ---------- 替换原统计循环 ----------
         np_data_list = []
         for idx, x in enumerate(all_low_dim_data[le_modality]):
             rows = flatten_object_array(x)  # 必然拿到 list[ndarray]
@@ -616,6 +588,10 @@ class LeRobotSingleDataset(Dataset):
         transformed_data = self.transforms(raw_data)
         # print(f"Debug - transformed_data keys: {transformed_data.keys()}")
 
+        # # 临时注释
+        # # debug 动作不改变
+        # transformed_data = raw_data
+
         return transformed_data
 
     def get_step_data(self, trajectory_id: int, base_index: int) -> dict:
@@ -704,6 +680,7 @@ class LeRobotSingleDataset(Dataset):
         front_padding_indices = step_indices < 0
         end_padding_indices = step_indices >= max_length
         padding_positions = np.logical_or(front_padding_indices, end_padding_indices)
+
         # Retrieve the data with the non-padding indices
         # If there exists some padding, Given T step_indices, the shape of the retrieved data will be (T', ...) where T' < T
         raw_data = array[step_indices[~padding_positions]]
@@ -847,21 +824,42 @@ class LeRobotSingleDataset(Dataset):
         # # 原始实现，不能正确读取数据维度
         # data_array: np.ndarray = np.stack(self.curr_traj_data[le_key])  # type: ignore
 
-        # 先剥壳再堆叠，保证 (T, dim)
-        data_list = [unwrap_list_array(x) for x in self.curr_traj_data[le_key]]
-        data_array = np.stack(data_list)  # 现在一定是 (T, dim) 且 dtype=float32
+        # 递归剥壳
+        from gr00t.data.umi_dataset import extract_3d_array_from_series
+        data_array = extract_3d_array_from_series(
+            self.curr_traj_data[le_key],
+            expected_shape=(max_length, None, None)  # 只验证时间维度
+        )
+        # print(f"✅ 成功提取 {le_key}: {data_array.shape}")
 
-        if data_array.ndim == 1:
-            assert (
-                data_array.shape[0] == max_length
-            ), f"Expected 1D array with length {max_length}, got {data_array.shape} array"
-            data_array = data_array.reshape(-1, 1)
-        assert data_array.ndim == 2, f"Expected 2D array, got {data_array.shape} array"
+        # # 原始实现
+        # # 维度检查，但是在修改后可能不需要了
+        # if data_array.ndim == 1:
+        #     assert (
+        #         data_array.shape[0] == max_length
+        #     ), f"Expected 1D array with length {max_length}, got {data_array.shape} array"
+        #     data_array = data_array.reshape(-1, 1)
+        # assert data_array.ndim == 2, f"Expected 2D array, got {data_array.shape} array"
+
+        # 关键步骤：根据modality中定义的索引范围，切片出对应的数据
         le_indices = np.arange(
             le_state_or_action_cfg[key].start,
             le_state_or_action_cfg[key].end,
         )
+
+        # 原始实现
+        # 只能应对data_array是2维的情况
         data_array = data_array[:, le_indices]
+
+        # # 修改后的版本，能应对data_array是3维的情况，已经迁移到umi_dataset.py
+        # # 需要应对modality为action的情况，切片后直接返回base_index对应的数据
+        # data_array = data_array[..., le_indices]  # 总是切片最后一维
+        #
+        # # ---------- 2. action 特殊分支 ----------
+        # if modality == "action":
+        #     d = data_array[base_index]
+        #     return d
+
         # Get the state or action configuration
         state_or_action_cfg = getattr(self.metadata.modalities, modality)[key]
 
